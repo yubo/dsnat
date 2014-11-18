@@ -1,0 +1,6 @@
+2014-11-18
+加入fullnat v2特性
+tools使用了netlink
+
+2013-06-20
+添加了源地址处理,实现了不同ip段选用不同local address的功能.
