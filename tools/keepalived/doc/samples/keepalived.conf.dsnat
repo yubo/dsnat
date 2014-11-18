@@ -1,0 +1,87 @@
+! Configuration File for keepalived
+global_defs {
+!   notification_email {
+!        root@localhost      #接收警报的 email 地址,可以添加多个
+!   }
+!   notification_email_from dsnat@localhost
+!   smtp_server 127.0.0.1    #使用本机转发 email
+!   smtp_connect_timeout 30
+!   router_id LVS_dsnat      #load balancer 的标识 ID,用于 email 警报
+}
+
+
+## 漂移ip包括内网的网关和公网的ip池
+vrrp_sync_group VG1 {
+    group {
+        VI_11
+        VI_12
+    }
+}
+
+vrrp_instance VI_11 {
+    state MASTER          #备机改为 BACKUP,此状态是由 priority 的值来决定的
+    interface eth2        #HA 监测网络接口，会在这个接口上做组播(224.0.0.18)
+    virtual_router_id 11  #主、备机的 virtual_router_id 必须相同
+    priority 150          #主机的优先级,备份机改为 50 或较低的值
+    advert_int 1          #主备之间的通告间隔秒数
+    authentication {
+        auth_type PASS
+        auth_pass grr11
+    }
+    virtual_ipaddress {
+        1.1.1.100         #内网网关
+    }
+}
+
+vrrp_instance VI_12 {
+    state MASTER
+    interface eth3
+    virtual_router_id 12
+    priority 150
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass grr12
+    }
+    virtual_ipaddress {
+        1.2.100.1          #公网ip地址池
+        1.2.100.2
+        1.2.100.3
+        1.2.100.4
+    }
+}
+
+## 把源地址分为1.1.0.0/16和0.0.0.0/0 2个zone,
+## 分别使用laddr_g1和laddr_g2 2个地址池的公网ip
+zone 1.1.0.0 16 {
+    laddr_group_name laddr_g1
+}
+
+zone 0.0.0.0 0.0.0.0 {
+    laddr_group_name laddr_g2
+}
+
+local_address_group laddr_g1 {
+    1.2.100.1
+    1.2.100.2
+}
+
+local_address_group laddr_g2 {
+    1.2.100.3
+    1.2.100.4
+}
+
+
+
+virtual_server 0.0.0.0 0 {
+    lb_algo rr            #lvs 调度算法,这里使用轮叫
+    lb_kind FNAT          #lvs 负载均衡机制,这里使用直连路由
+    protocol TCP          #用 TCP 协议检查 realserver 状态
+}
+
+virtual_server 0.0.0.0 0 {
+    lb_algo rr
+    lb_kind FNAT
+    protocol UDP          #用 UDP 协议检查 realserver 状态
+}
+
