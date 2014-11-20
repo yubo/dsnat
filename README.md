@@ -1,6 +1,6 @@
 ##dsnat简介
 
-dsnat(Dynamic Source  Network Address Translation) 是一个基于lvs的模块,在taobao开源的[FNAT][]基础上开发,dsnat位于网络的网关位置,内网访问外网时,会将内网地址改成公网地址池中的ip,轮询选择
+dsnat(Dynamic Source  Network Address Translation) 是一个基于lvs的模块,在taobao开源的[FNAT][] 和 [lvs][]基础上开发,dsnat位于网络的网关位置,内网访问外网时,会将内网地址改成公网地址池中的ip,轮询选择
 
 目前该模块只支持ipv4下的TCP,UDP协议, ICMP暂时还不支持
 
@@ -45,10 +45,10 @@ wget http://xiaomi-kernel.xae.xiaomi.com/mi4-dsnat/tools/keepalived -O /sbin/kee
 
 <!--more-->
 
-1. 下载 redhat 6.3的内核
+1. 下载 redhat 内核
 
 ```
-wget ftp://ftp.redhat.com/pub/redhat/linux/enterprise/6Server/en/os/SRPMS/kernel-2.6.32-279.el6.src.rpm
+wget ftp://ftp.redhat.com/pub/redhat/linux/enterprise/6Server/en/os/SRPMS/kernel-2.6.32-220.23.1.el6.src.rpm
 ```
 
 2. 准备代码
@@ -75,9 +75,9 @@ rpmbuild -bp kernel.spec
 
 ```
 cd ~/rpms/BUILD/
-cd kernel-2.6.32-279.23.1.el6/linux-2.6.32-279.23.1.el6.x86_64/
-wget https://raw.github.com/xiaomi-sa/dsnat/master/dsnat-kernel-2.6.32-279.23.1.el6/dsnat-2.6.32-279.23.1.el6.xiaomi.noconfig.patch
-patch -p1 < dsnat-2.6.32-279.23.1.el6.xiaomi.noconfig.patch
+cd kernel-2.6.32-220.23.1.el6/linux-2.6.32-220.23.1.el6.x86_64/
+cp lvs-2.6.32-220.23.1.el6.patch ./
+patch -p1<dsnat-2.6.32-220.23.1.el6.patch
 ```
 
 4. 编译安装
@@ -290,9 +290,11 @@ virtual_server 0.0.0.0 0 {
 * [FNAT][]
 * [dsnat][]
 * [dsnat_tools][]
+* [lvs][]
 
 
 [FNAT]:http://kb.linuxvirtualserver.org/wiki/IPVS_FULLNAT_and_SYNPROXY
 [dsnat_img]:https://raw.github.com/xiaomi-sa/dsnat/master/dsnat-kernel-2.6.32-220.23.1.el6/dsnat.jpg
 [dsnat]:https://github.com/xiaomi-sa/dsnat/tree/master/dsnat-kernel-2.6.32-279.23.1.el6/dsnat-2.6.32-279.23.1.el6.xiaomi.noconfig.patch
 [dsnat_tools]:https://github.com/xiaomi-sa/dsnat/tree/master/dsnat_tools
+[lvs]:https://github.com/alibaba/LVS
