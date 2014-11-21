@@ -16,6 +16,9 @@ vrrp_sync_group VG1 {
         VI_11
         VI_12
     }
+    notify_master "/sbin/iptables -t nat -A POSTROUTING -o eth3  -p icmp -j SNAT --to-source 1.2.100.1"                                                                      
+    notify_backup "/sbin/iptables -t nat -D POSTROUTING -o eth3  -p icmp -j SNAT --to-source 1.2.100.1"                                                                      
+    notify_stop "/sbin/iptables -t nat -D POSTROUTING -o eth3  -p icmp -j SNAT --to-source 1.2.100.1"
 }
 
 vrrp_instance VI_11 {
