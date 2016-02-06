@@ -25,6 +25,6 @@
 
 #define LOG_FACILITY_MAX	7
 #define PROG			"Keepalived"
-#define VERSION_STRING PROG" v1.2.2-dsnat (11/18,2014)\n"
+#define VERSION_STRING PROG" v1.2.2-dsnat (02/07,2016)\n"
 
 #endif

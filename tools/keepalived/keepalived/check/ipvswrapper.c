@@ -637,8 +637,10 @@ ipvs_laddr_group_cmd(int cmd, local_addr_group *laddr_group)
 		laddr_rule->af = laddr_entry->addr.ss_family;
 		if (laddr_entry->addr.ss_family == AF_INET6)
 			inet_sockaddrip6(&laddr_entry->addr, &laddr_rule->addr.in6);
-		else
+		else{
 			laddr_rule->addr.ip = inet_sockaddrip4(&laddr_entry->addr);
+			laddr_rule->__addr_v4 = laddr_rule->addr.ip;
+		}
 		ipvs_talk(cmd);
 	}
 

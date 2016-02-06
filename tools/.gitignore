@@ -1,0 +1,6 @@
+*.o
+*.swp
+ipvsadm
+*.log
+*.status
+*.a
