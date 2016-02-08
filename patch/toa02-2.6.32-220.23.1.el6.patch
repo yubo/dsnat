@@ -1,0 +1,602 @@
+diff --git a/net/ipv4/tcp_ipv4.c b/net/ipv4/tcp_ipv4.c
+index d2027f6..f43a3b3 100644
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -406,6 +406,9 @@ void tcp_v4_err(struct sk_buff *icmp_skb, u32 info)
+ 		    !icsk->icsk_backoff)
+ 			break;
+ 
++		if (sock_owned_by_user(sk))
++			break;
++
+ 		icsk->icsk_backoff--;
+ 		inet_csk(sk)->icsk_rto = __tcp_set_rto(tp) <<
+ 					 icsk->icsk_backoff;
+@@ -420,11 +423,6 @@ void tcp_v4_err(struct sk_buff *icmp_skb, u32 info)
+ 		if (remaining) {
+ 			inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
+ 						  remaining, TCP_RTO_MAX);
+-		} else if (sock_owned_by_user(sk)) {
+-			/* RTO revert clocked out retransmission,
+-			 * but socket is locked. Will defer. */
+-			inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
+-						  HZ/20, TCP_RTO_MAX);
+ 		} else {
+ 			/* RTO revert clocked out retransmission.
+ 			 * Will retransmit now */
+diff --git a/net/toa/toa.c b/net/toa/toa.c
+index d90dfbb..4d619ea 100644
+--- a/net/toa/toa.c
++++ b/net/toa/toa.c
+@@ -1,29 +1,14 @@
+ #include "toa.h"
+ 
+ /*
+- * TOA	a new Tcp Option as Address,
+- *	here address including IP and Port.
+- *	the real {IP,Port} can be added into option field of TCP header,
+- *	with LVS FULLNAT model, the realservice are still able to receive real {IP,Port} info.
+- *	So far, this module only supports IPv4 and IPv6 mapped IPv4.
+- *
+- * Authors: 
+- * 	Wen Li	<steel.mental@gmail.com>
+- *	Yan Tian   <tianyan.7c00@gmail.com>
+- *	Jiaming Wu <pukong.wjm@taobao.com>
+- *	Jiajun Chen  <mofan.cjj@taobao.com>
+- *
+- *	This program is free software; you can redistribute it and/or
+- *	modify it under the terms of the GNU General Public License
+- *	as published by the Free Software Foundation; either version
+- * 	2 of the License, or (at your option) any later version.
+- *
++ *	TOA: Address is a new TCP Option
++ *	Address include ip+port, Now only support IPV4
+  */
+ 
+ unsigned long sk_data_ready_addr = 0;
+ 
+ /*
+- * Statistics of toa in proc /proc/net/toa_stats 
++ * Statistics of toa in proc /proc/net/toa_stats
+  */
+ 
+ struct toa_stats_entry toa_stats[] = {
+@@ -36,10 +21,13 @@ struct toa_stats_entry toa_stats[] = {
+ 	TOA_STAT_END
+ };
+ 
+-DEFINE_TOA_STAT(struct toa_stat_mib, ext_stats);
++/*
++ * DEFINE_TOA_STAT(struct toa_stat_mib, ext_stats);
++ */
++struct toa_stat_mib *ext_stats;
+ 
+ /*
+- * Funcs for toa hooks 
++ * Funcs for toa hooks
+  */
+ 
+ /* Parse TCP options in skb, try to get client ip, port
+@@ -47,7 +35,7 @@ DEFINE_TOA_STAT(struct toa_stat_mib, ext_stats);
+  * @return NULL if we don't get client ip/port;
+  *         value of toa_data in ret_ptr if we get client ip/port.
+  */
+-static void * get_toa_data(struct sk_buff *skb)
++static void *get_toa_data(struct sk_buff *skb)
+ {
+ 	struct tcphdr *th;
+ 	int length;
+@@ -57,11 +45,11 @@ static void * get_toa_data(struct sk_buff *skb)
+ 
+ 	void *ret_ptr = NULL;
+ 
+-	//TOA_DBG("get_toa_data called\n");
++	TOA_DBG("get_toa_data called\n");
+ 
+ 	if (NULL != skb) {
+ 		th = tcp_hdr(skb);
+-		length = (th->doff * 4) - sizeof (struct tcphdr);
++		length = (th->doff * 4) - sizeof(struct tcphdr);
+ 		ptr = (unsigned char *) (th + 1);
+ 
+ 		while (length > 0) {
+@@ -78,13 +66,19 @@ static void * get_toa_data(struct sk_buff *skb)
+ 				if (opsize < 2)	/* "silly options" */
+ 					return NULL;
+ 				if (opsize > length)
+-					return NULL;	/* don't parse partial options */
+-				if (TCPOPT_TOA == opcode && TCPOLEN_TOA == opsize) {
+-					memcpy(&tdata, ptr - 2, sizeof (tdata));
+-					//TOA_DBG("find toa data: ip = %u.%u.%u.%u, port = %u\n", NIPQUAD(tdata.ip),
+-						//ntohs(tdata.port));
+-					memcpy(&ret_ptr, &tdata, sizeof (ret_ptr));
+-					//TOA_DBG("coded toa data: %p\n", ret_ptr);
++					/* don't parse partial options */
++					return NULL;
++				if (TCPOPT_TOA == opcode &&
++				    TCPOLEN_TOA == opsize) {
++					memcpy(&tdata, ptr - 2, sizeof(tdata));
++					TOA_DBG("find toa data: ip = "
++						"%u.%u.%u.%u, port = %u\n",
++						NIPQUAD(tdata.ip),
++						ntohs(tdata.port));
++					memcpy(&ret_ptr, &tdata,
++						sizeof(ret_ptr));
++					TOA_DBG("coded toa data: %p\n",
++						ret_ptr);
+ 					return ret_ptr;
+ 				}
+ 				ptr += opsize - 2;
+@@ -95,22 +89,25 @@ static void * get_toa_data(struct sk_buff *skb)
+ 	return NULL;
+ }
+ 
+-/* get client ip from socket 
++/* get client ip from socket
+  * @param sock [in] the socket to getpeername() or getsockname()
+  * @param uaddr [out] the place to put client ip, port
+  * @param uaddr_len [out] lenth of @uaddr
+- * @peer [in] if(peer), try to get remote address; if(!peer), try to get local address
++ * @peer [in] if(peer), try to get remote address; if(!peer),
++ *  try to get local address
+  * @return return what the original inet_getname() returns.
+  */
+ static int
+-inet_getname_toa(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len, int peer)
++inet_getname_toa(struct socket *sock, struct sockaddr *uaddr,
++		int *uaddr_len, int peer)
+ {
+ 	int retval = 0;
+ 	struct sock *sk = sock->sk;
+ 	struct sockaddr_in *sin = (struct sockaddr_in *) uaddr;
+ 	struct toa_data tdata;
+ 
+-	//TOA_DBG("inet_getname_toa called, sk->sk_user_data is %p\n", sk->sk_user_data);
++	TOA_DBG("inet_getname_toa called, sk->sk_user_data is %p\n",
++		sk->sk_user_data);
+ 
+ 	/* call orginal one */
+ 	retval = inet_getname(sock, uaddr, uaddr_len, peer);
+@@ -118,39 +115,49 @@ inet_getname_toa(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len, in
+ 	/* set our value if need */
+ 	if (retval == 0 && NULL != sk->sk_user_data && peer) {
+ 		if (sk_data_ready_addr == (unsigned long) sk->sk_data_ready) {
+-			memcpy(&tdata, &sk->sk_user_data, sizeof (tdata));
+-			if (TCPOPT_TOA == tdata.opcode && TCPOLEN_TOA == tdata.opsize) {
++			memcpy(&tdata, &sk->sk_user_data, sizeof(tdata));
++			if (TCPOPT_TOA == tdata.opcode &&
++			    TCPOLEN_TOA == tdata.opsize) {
+ 				TOA_INC_STATS(ext_stats, GETNAME_TOA_OK_CNT);
+-				//TOA_DBG("inet_getname_toa: set new sockaddr, ip %u.%u.%u.%u -> %u.%u.%u.%u, port %u -> %u\n",
+-				//		NIPQUAD(sin->sin_addr.s_addr), NIPQUAD(tdata.ip), ntohs(sin->sin_port),
+-				//		ntohs(tdata.port));
++				TOA_DBG("inet_getname_toa: set new sockaddr, "
++					"ip %u.%u.%u.%u -> %u.%u.%u.%u, port "
++					"%u -> %u\n",
++					NIPQUAD(sin->sin_addr.s_addr),
++					NIPQUAD(tdata.ip), ntohs(sin->sin_port),
++					ntohs(tdata.port));
+ 				sin->sin_port = tdata.port;
+ 				sin->sin_addr.s_addr = tdata.ip;
+ 			} else { /* sk_user_data doesn't belong to us */
+-				TOA_INC_STATS(ext_stats, GETNAME_TOA_MISMATCH_CNT);
+-				//TOA_DBG("inet_getname_toa: invalid toa data, ip %u.%u.%u.%u port %u opcode %u opsize %u\n",
+-				//		NIPQUAD(tdata.ip), ntohs(tdata.port), tdata.opcode, tdata.opsize);
++				TOA_INC_STATS(ext_stats,
++						GETNAME_TOA_MISMATCH_CNT);
++				TOA_DBG("inet_getname_toa: invalid toa data, "
++					"ip %u.%u.%u.%u port %u opcode %u "
++					"opsize %u\n",
++					NIPQUAD(tdata.ip), ntohs(tdata.port),
++					tdata.opcode, tdata.opsize);
+ 			}
+ 		} else {
+ 			TOA_INC_STATS(ext_stats, GETNAME_TOA_BYPASS_CNT);
+ 		}
+ 	} else { /* no need to get client ip */
+ 		TOA_INC_STATS(ext_stats, GETNAME_TOA_EMPTY_CNT);
+-	} 
++	}
+ 
+ 	return retval;
+ }
+ 
+-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
++#ifdef CONFIG_IP_VS_IPV6
+ static int
+-inet6_getname_toa(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len, int peer)
++inet6_getname_toa(struct socket *sock, struct sockaddr *uaddr,
++		  int *uaddr_len, int peer)
+ {
+ 	int retval = 0;
+ 	struct sock *sk = sock->sk;
+ 	struct sockaddr_in6 *sin = (struct sockaddr_in6 *) uaddr;
+ 	struct toa_data tdata;
+ 
+-	//TOA_DBG("inet6_getname_toa called, sk->sk_user_data is %p\n", sk->sk_user_data);
++	TOA_DBG("inet6_getname_toa called, sk->sk_user_data is %p\n",
++		sk->sk_user_data);
+ 
+ 	/* call orginal one */
+ 	retval = inet6_getname(sock, uaddr, uaddr_len, peer);
+@@ -158,20 +165,23 @@ inet6_getname_toa(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len, i
+ 	/* set our value if need */
+ 	if (retval == 0 && NULL != sk->sk_user_data && peer) {
+ 		if (sk_data_ready_addr == (unsigned long) sk->sk_data_ready) {
+-			memcpy(&tdata, &sk->sk_user_data, sizeof (tdata));
+-			if (TCPOPT_TOA == tdata.opcode && TCPOLEN_TOA == tdata.opsize) {
++			memcpy(&tdata, &sk->sk_user_data, sizeof(tdata));
++			if (TCPOPT_TOA == tdata.opcode &&
++			    TCPOLEN_TOA == tdata.opsize) {
+ 				TOA_INC_STATS(ext_stats, GETNAME_TOA_OK_CNT);
+ 				sin->sin6_port = tdata.port;
+-				ipv6_addr_set(&sin->sin6_addr, 0, 0, htonl(0x0000FFFF), tdata.ip);
++				ipv6_addr_set(&sin->sin6_addr, 0, 0,
++					      htonl(0x0000FFFF), tdata.ip);
+ 			} else { /* sk_user_data doesn't belong to us */
+-				TOA_INC_STATS(ext_stats, GETNAME_TOA_MISMATCH_CNT);
++				TOA_INC_STATS(ext_stats,
++					      GETNAME_TOA_MISMATCH_CNT);
+ 			}
+ 		} else {
+ 			TOA_INC_STATS(ext_stats, GETNAME_TOA_BYPASS_CNT);
+ 		}
+ 	} else { /* no need to get client ip */
+ 		TOA_INC_STATS(ext_stats, GETNAME_TOA_EMPTY_CNT);
+-	} 
++	}
+ 
+ 	return retval;
+ }
+@@ -187,11 +197,12 @@ inet6_getname_toa(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len, i
+  * @return NULL if fail new socket if succeed.
+  */
+ static struct sock *
+-tcp_v4_syn_recv_sock_toa(struct sock *sk, struct sk_buff *skb, struct request_sock *req, struct dst_entry *dst)
++tcp_v4_syn_recv_sock_toa(struct sock *sk, struct sk_buff *skb,
++			struct request_sock *req, struct dst_entry *dst)
+ {
+ 	struct sock *newsock = NULL;
+ 
+-	//TOA_DBG("tcp_v4_syn_recv_sock_toa called\n");
++	TOA_DBG("tcp_v4_syn_recv_sock_toa called\n");
+ 
+ 	/* call orginal one */
+ 	newsock = tcp_v4_syn_recv_sock(sk, skb, req, dst);
+@@ -199,23 +210,25 @@ tcp_v4_syn_recv_sock_toa(struct sock *sk, struct sk_buff *skb, struct request_so
+ 	/* set our value if need */
+ 	if (NULL != newsock && NULL == newsock->sk_user_data) {
+ 		newsock->sk_user_data = get_toa_data(skb);
+-		if(NULL != newsock->sk_user_data){
++		if (NULL != newsock->sk_user_data)
+ 			TOA_INC_STATS(ext_stats, SYN_RECV_SOCK_TOA_CNT);
+-		} else {
++		else
+ 			TOA_INC_STATS(ext_stats, SYN_RECV_SOCK_NO_TOA_CNT);
+-		}
+-		//TOA_DBG("tcp_v4_syn_recv_sock_toa: set sk->sk_user_data to %p\n", newsock->sk_user_data);
++		TOA_DBG("tcp_v4_syn_recv_sock_toa: set "
++			"sk->sk_user_data to %p\n",
++			newsock->sk_user_data);
+ 	}
+ 	return newsock;
+ }
+ 
+-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
++#ifdef CONFIG_IP_VS_IPV6
+ static struct sock *
+-tcp_v6_syn_recv_sock_toa(struct sock *sk, struct sk_buff *skb, struct request_sock *req, struct dst_entry *dst)
++tcp_v6_syn_recv_sock_toa(struct sock *sk, struct sk_buff *skb,
++			 struct request_sock *req, struct dst_entry *dst)
+ {
+ 	struct sock *newsock = NULL;
+ 
+-	//TOA_DBG("tcp_v4_syn_recv_sock_toa called\n");
++	TOA_DBG("tcp_v4_syn_recv_sock_toa called\n");
+ 
+ 	/* call orginal one */
+ 	newsock = tcp_v6_syn_recv_sock(sk, skb, req, dst);
+@@ -223,55 +236,58 @@ tcp_v6_syn_recv_sock_toa(struct sock *sk, struct sk_buff *skb, struct request_so
+ 	/* set our value if need */
+ 	if (NULL != newsock && NULL == newsock->sk_user_data) {
+ 		newsock->sk_user_data = get_toa_data(skb);
+-		if(NULL != newsock->sk_user_data){
++		if (NULL != newsock->sk_user_data) 
+ 			TOA_INC_STATS(ext_stats, SYN_RECV_SOCK_TOA_CNT);
+-		} else {
++		else
+ 			TOA_INC_STATS(ext_stats, SYN_RECV_SOCK_NO_TOA_CNT);
+-		}
+ 	}
+ 	return newsock;
+ }
+ #endif
+ 
+ /*
+- * HOOK FUNCS 
++ * HOOK FUNCS
+  */
+ 
+ /* replace the functions with our functions */
+ static inline int
+ hook_toa_functions(void)
+ {
+-	struct proto_ops *inet_stream_ops_p;
+-	struct proto_ops *inet6_stream_ops_p;
+-	struct inet_connection_sock_af_ops *ipv4_specific_p;
+-	struct inet_connection_sock_af_ops *ipv6_specific_p;
+-
+ 	/* hook inet_getname for ipv4 */
+-	inet_stream_ops_p = (struct proto_ops *)&inet_stream_ops;
++	struct proto_ops *inet_stream_ops_p =
++			(struct proto_ops *)&inet_stream_ops;
++	/* hook tcp_v4_syn_recv_sock for ipv4 */
++	struct inet_connection_sock_af_ops *ipv4_specific_p =
++			(struct inet_connection_sock_af_ops *)&ipv4_specific;
++#ifdef CONFIG_IP_VS_IPV6
++	/* hook inet6_getname for ipv6 */
++	struct proto_ops *inet6_stream_ops_p =
++			(struct proto_ops *)&inet6_stream_ops;
++	/* hook tcp_v6_syn_recv_sock for ipv6 */
++	struct inet_connection_sock_af_ops *ipv6_specific_p =
++			(struct inet_connection_sock_af_ops *)&ipv6_specific;
++#endif
++
+ 	inet_stream_ops_p->getname = inet_getname_toa;
+-	TOA_INFO("CPU [%u] hooked inet_getname <%p> --> <%p>\n", smp_processor_id(), inet_getname,
+-		 inet_stream_ops_p->getname);
++	TOA_INFO("CPU [%u] hooked inet_getname <%p> --> <%p>\n",
++		smp_processor_id(), inet_getname, inet_stream_ops_p->getname);
+ 
+-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+-	/* hook inet6_getname for ipv6 */
+-	inet6_stream_ops_p = (struct proto_ops *)&inet6_stream_ops;
++#ifdef CONFIG_IP_VS_IPV6
+ 	inet6_stream_ops_p->getname = inet6_getname_toa;
+-	TOA_INFO("CPU [%u] hooked inet6_getname <%p> --> <%p>\n", smp_processor_id(), inet6_getname,
+-		 inet6_stream_ops_p->getname);
++	TOA_INFO("CPU [%u] hooked inet6_getname <%p> --> <%p>\n",
++		smp_processor_id(), inet6_getname, inet6_stream_ops_p->getname);
+ #endif
+ 
+-	/* hook tcp_v4_syn_recv_sock for ipv4 */
+-	ipv4_specific_p = (struct inet_connection_sock_af_ops *)&ipv4_specific;
+ 	ipv4_specific_p->syn_recv_sock = tcp_v4_syn_recv_sock_toa;
+-	TOA_INFO("CPU [%u] hooked tcp_v4_syn_recv_sock <%p> --> <%p>\n", smp_processor_id(), tcp_v4_syn_recv_sock,
+-		 ipv4_specific_p->syn_recv_sock);
++	TOA_INFO("CPU [%u] hooked tcp_v4_syn_recv_sock <%p> --> <%p>\n",
++		smp_processor_id(), tcp_v4_syn_recv_sock,
++		ipv4_specific_p->syn_recv_sock);
+ 
+-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+-	/* hook tcp_v6_syn_recv_sock for ipv6 */
+-	ipv6_specific_p = (struct inet_connection_sock_af_ops *)&ipv6_specific;
++#ifdef CONFIG_IP_VS_IPV6
+ 	ipv6_specific_p->syn_recv_sock = tcp_v6_syn_recv_sock_toa;
+-	TOA_INFO("CPU [%u] hooked tcp_v6_syn_recv_sock <%p> --> <%p>\n", smp_processor_id(), tcp_v6_syn_recv_sock,
+-		 ipv6_specific_p->syn_recv_sock);
++	TOA_INFO("CPU [%u] hooked tcp_v6_syn_recv_sock <%p> --> <%p>\n",
++		smp_processor_id(), tcp_v6_syn_recv_sock,
++		ipv6_specific_p->syn_recv_sock);
+ #endif
+ 
+ 	return 0;
+@@ -281,47 +297,55 @@ hook_toa_functions(void)
+ static int
+ unhook_toa_functions(void)
+ {
+-        struct proto_ops *inet_stream_ops_p;
+-        struct proto_ops *inet6_stream_ops_p;
+-        struct inet_connection_sock_af_ops *ipv4_specific_p;
+-        struct inet_connection_sock_af_ops *ipv6_specific_p;
+-
+ 	/* unhook inet_getname for ipv4 */
+-	inet_stream_ops_p = (struct proto_ops *)&inet_stream_ops;
+-	inet_stream_ops_p->getname = inet_getname;
+-	TOA_INFO("CPU [%u] unhooked inet_getname\n", smp_processor_id());
++	struct proto_ops *inet_stream_ops_p =
++			(struct proto_ops *)&inet_stream_ops;
++	/* unhook tcp_v4_syn_recv_sock for ipv4 */
++	struct inet_connection_sock_af_ops *ipv4_specific_p =
++			(struct inet_connection_sock_af_ops *)&ipv4_specific;
+ 
+-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
++#ifdef CONFIG_IP_VS_IPV6
+ 	/* unhook inet6_getname for ipv6 */
+-	inet6_stream_ops_p = (struct proto_ops *)&inet6_stream_ops;
++	struct proto_ops *inet6_stream_ops_p =
++			(struct proto_ops *)&inet6_stream_ops;
++	/* unhook tcp_v6_syn_recv_sock for ipv6 */
++	struct inet_connection_sock_af_ops *ipv6_specific_p =
++			(struct inet_connection_sock_af_ops *)&ipv6_specific;
++#endif
++	inet_stream_ops_p->getname = inet_getname;
++	TOA_INFO("CPU [%u] unhooked inet_getname\n",
++		smp_processor_id());
++
++#ifdef CONFIG_IP_VS_IPV6
+ 	inet6_stream_ops_p->getname = inet6_getname;
+-	TOA_INFO("CPU [%u] unhooked inet6_getname\n", smp_processor_id());
++	TOA_INFO("CPU [%u] unhooked inet6_getname\n",
++		smp_processor_id());
+ #endif
+ 
+-	/* unhook tcp_v4_syn_recv_sock for ipv4 */
+-	ipv4_specific_p = (struct inet_connection_sock_af_ops *)&ipv4_specific;
+ 	ipv4_specific_p->syn_recv_sock = tcp_v4_syn_recv_sock;
+-	TOA_INFO("CPU [%u] unhooked tcp_v4_syn_recv_sock\n", smp_processor_id());
++	TOA_INFO("CPU [%u] unhooked tcp_v4_syn_recv_sock\n",
++		smp_processor_id());
+ 
+-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+-	/* unhook tcp_v6_syn_recv_sock for ipv6 */
+-	ipv6_specific_p = (struct inet_connection_sock_af_ops *)&ipv6_specific;
++#ifdef CONFIG_IP_VS_IPV6
+ 	ipv6_specific_p->syn_recv_sock = tcp_v6_syn_recv_sock;
+-	TOA_INFO("CPU [%u] unhooked tcp_v6_syn_recv_sock\n", smp_processor_id());
++	TOA_INFO("CPU [%u] unhooked tcp_v6_syn_recv_sock\n",
++		smp_processor_id());
+ #endif
+ 
+ 	return 0;
+ }
+ 
+ /*
+- * Statistics of toa in proc /proc/net/toa_stats 
++ * Statistics of toa in proc /proc/net/toa_stats
+  */
+-static int toa_stats_show(struct seq_file *seq, void *v){
+-	int i, j;
++static int toa_stats_show(struct seq_file *seq, void *v)
++{
++	int i, j, cpu_nr;
+ 
+ 	/* print CPU first */
+ 	seq_printf(seq, "                                  ");
+-	for (i = 0; i < NR_CPUS; i++)
++	cpu_nr = num_possible_cpus();
++	for (i = 0; i < cpu_nr; i++)
+ 		if (cpu_online(i))
+ 			seq_printf(seq, "CPU%d       ", i);
+ 	seq_putc(seq, '\n');
+@@ -329,10 +353,12 @@ static int toa_stats_show(struct seq_file *seq, void *v){
+ 	i = 0;
+ 	while (NULL != toa_stats[i].name) {
+ 		seq_printf(seq, "%-25s:", toa_stats[i].name);
+-		for (j = 0; j < NR_CPUS; j++) {
++		for (j = 0; j < cpu_nr; j++) {
+ 			if (cpu_online(j)) {
+-				seq_printf(seq, "%10lu ",
+-					   *(((unsigned long *) per_cpu_ptr(ext_stats, j)) + toa_stats[i].entry));
++				seq_printf(seq, "%10lu ", *(
++					((unsigned long *) per_cpu_ptr(
++					ext_stats, j)) + toa_stats[i].entry
++					));
+ 			}
+ 		}
+ 		seq_putc(seq, '\n');
+@@ -355,7 +381,7 @@ static const struct file_operations toa_stats_fops = {
+ };
+ 
+ /*
+- * TOA module init and destory 
++ * TOA module init and destory
+  */
+ 
+ /* module init */
+@@ -366,17 +392,19 @@ toa_init(void)
+ 	TOA_INFO("TOA " TOA_VERSION " by pukong.wjm\n");
+ 
+ 	/* alloc statistics array for toa */
+-	if (NULL == (ext_stats = alloc_percpu(struct toa_stat_mib)))
++	ext_stats = alloc_percpu(struct toa_stat_mib);
++	if (NULL == ext_stats)
+ 		return 1;
+ 	proc_net_fops_create(&init_net, "toa_stats", 0, &toa_stats_fops);
+-	
++
+ 	/* get the address of function sock_def_readable
+-	 * so later we can know whether the sock is for rpc, tux or others 
++	 * so later we can know whether the sock is for rpc, tux or others
+ 	 */
+ 	sk_data_ready_addr = kallsyms_lookup_name("sock_def_readable");
+-	TOA_INFO("CPU [%u] sk_data_ready_addr = kallsyms_lookup_name(sock_def_readable) = %lu\n", 
++	TOA_INFO("CPU [%u] sk_data_ready_addr = "
++		"kallsyms_lookup_name(sock_def_readable) = %lu\n",
+ 		 smp_processor_id(), sk_data_ready_addr);
+-	if(0 == sk_data_ready_addr) {
++	if (0 == sk_data_ready_addr) {
+ 		TOA_INFO("cannot find sock_def_readable.\n");
+ 		goto err;
+ 	}
+@@ -388,11 +416,11 @@ toa_init(void)
+ 	return 0;
+ 
+ err:
+-        proc_net_remove(&init_net, "toa_stats");
+-        if (NULL != ext_stats) {
+-                free_percpu(ext_stats);
+-                ext_stats = NULL;
+-        }
++	proc_net_remove(&init_net, "toa_stats");
++	if (NULL != ext_stats) {
++		free_percpu(ext_stats);
++		ext_stats = NULL;
++	}
+ 
+ 	return 1;
+ }
+diff --git a/net/toa/toa.h b/net/toa/toa.h
+index 2ee47a3..dfafbbc 100644
+--- a/net/toa/toa.h
++++ b/net/toa/toa.h
+@@ -10,7 +10,7 @@
+ #include <linux/skbuff.h>
+ #include <net/tcp.h>
+ #include <net/inet_common.h>
+-#include <asm/uaccess.h>
++#include <linux/uaccess.h>
+ #include <linux/netdevice.h>
+ #include <net/net_namespace.h>
+ #include <linux/fs.h>
+@@ -22,18 +22,18 @@
+ 
+ #define TOA_VERSION "1.0.0.0"
+ 
+-#define TOA_DBG(msg...)			\
+-    do {						\
+-          printk(KERN_DEBUG "[DEBUG] TOA: " msg);       \
+-    } while (0)
++#define TOA_DBG(msg...)				\
++	do {					\
++		printk(KERN_DEBUG "[DEBUG] TOA: " msg); \
++	} while (0)
+ 
+-#define TOA_INFO(msg...)			\
+-     do { \
+-          if(net_ratelimit()) \
+-               printk(KERN_INFO "TOA: " msg);\
+-     } while(0)
++#define TOA_INFO(msg...)				\
++	do {						\
++		if (net_ratelimit())			\
++			printk(KERN_INFO "TOA: " msg);	\
++	} while (0)
+ 
+-#define TCPOPT_TOA  200
++#define TCPOPT_TOA  254
+ 
+ /* MUST be 4n !!!! */
+ #define TCPOLEN_TOA 8		/* |opcode|size|ip+port| = 1 + 1 + 6 */
+@@ -63,13 +63,13 @@ struct toa_stats_entry {
+ };
+ 
+ #define TOA_STAT_ITEM(_name, _entry) { \
+-        .name = _name,            \
+-        .entry = _entry,          \
++	.name = _name,		\
++	.entry = _entry,	\
+ }
+ 
+-#define TOA_STAT_END {    \
+-        NULL,           \
+-        0,              \
++#define TOA_STAT_END {	\
++	NULL,		\
++	0,		\
+ }
+ 
+ struct toa_stat_mib {
+@@ -77,10 +77,8 @@ struct toa_stat_mib {
+ };
+ 
+ #define DEFINE_TOA_STAT(type, name)       \
+-        __typeof__(type) *name
++	(__typeof__(type) *name)
+ #define TOA_INC_STATS(mib, field)         \
+-        (per_cpu_ptr(mib, smp_processor_id())->mibs[field]++)
+-
++	(per_cpu_ptr(mib, smp_processor_id())->mibs[field]++)
+ 
+ #endif
+-

@@ -10588,3 +10588,19 @@ index 30b3189..72a2f86 100644
  		icmpv6_send(skb, ICMPV6_PKT_TOOBIG, 0, mtu, skb->dev);
  		IP_VS_DBG_RL("%s(): frag needed\n", __func__);
  		goto tx_error;
+diff --git a/patches b/patches
+new file mode 120000
+index 0000000..44bd8cb
+--- /dev/null
++++ b/patches
+@@ -0,0 +1 @@
++/root/patches
+\ No newline at end of file
+diff --git a/refresh_patch.sh b/refresh_patch.sh
+new file mode 120000
+index 0000000..4f744b7
+--- /dev/null
++++ b/refresh_patch.sh
+@@ -0,0 +1 @@
++/root/bin/refresh_patch.sh
+\ No newline at end of file
